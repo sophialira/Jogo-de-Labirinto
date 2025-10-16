@@ -37,6 +37,3 @@ O objetivo é iniciar partidas, ver seu histórico de paridas anteriores e sair 
   - [pyfiglet]
   - [pyinquirer]
   - [tqdm]
-1. Clone este repositório:  
-   ```bash
-   git clone https://github.com/seuusuario/nomedoprojeto.git
