@@ -1,0 +1,445 @@
+from __future__ import annotations
+import random
+import json
+import os
+import sys
+import time
+from typing import List, Tuple
+
+
+try:
+    from colorama import init as colorama_init, Fore, Back, Style
+    colorama_init(autoreset=True)
+    USE_COLORAMA = True
+except Exception:
+    USE_COLORAMA = False
+    try:
+        from termcolor import colored
+    except Exception:
+        colored = None
+
+try:
+    import pyfiglet
+    HAS_PYFIGLET = True
+except Exception:
+    HAS_PYFIGLET = False
+
+try:
+    from rich import print as rprint
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.console import Console
+    console = Console()
+    HAS_RICH = True
+except Exception:
+    HAS_RICH = False
+    def rprint(*args, **kwargs):
+        print(*args)
+
+
+INQUIRER = None
+try:
+    import inquirer as _inquirer
+    INQUIRER = _inquirer
+except Exception:
+    try:
+        from PyInquirer import prompt as _prompt
+        INQUIRER = "PyInquirer"
+    except Exception:
+        INQUIRER = None
+
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except Exception:
+    HAS_TQDM = False
+
+HISTORY_FILE = "history.json"
+DEFAULT_ROWS = 12
+DEFAULT_COLS = 20
+OBSTACLE_DENSITY = 0.22  
+
+def save_history(record: dict):
+    data = []
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = []
+    data.append(record)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_history() -> List[dict]:
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def cprint(text: str, color: str = None, on_color: str = None, attrs=None):
+    """Colorized print using colorama or termcolor or plain print."""
+    if USE_COLORAMA:
+        mapping = {
+            "red": Fore.RED,
+            "green": Fore.GREEN,
+            "yellow": Fore.YELLOW,
+            "blue": Fore.BLUE,
+            "magenta": Fore.MAGENTA,
+            "cyan": Fore.CYAN,
+            "white": Fore.WHITE,
+        }
+        pref = mapping.get(color, "")
+        suf = Style.RESET_ALL
+        print(pref + text + suf)
+    elif colored:
+        print(colored(text, color, on_color, attrs=attrs))
+    else:
+        print(text)
+
+Cell = Tuple[int, int]
+
+
+def make_empty_grid(rows: int, cols: int) -> List[List[str]]:
+    return [[" " for _ in range(cols)] for _ in range(rows)]
+
+
+def neighbors(cell: Cell, rows: int, cols: int) -> List[Cell]:
+    r, c = cell
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        rr, cc = r + dr, c + dc
+        if 0 <= rr < rows and 0 <= cc < cols:
+            yield (rr, cc)
+
+
+def is_reachable(grid: List[List[str]], start: Cell, end: Cell) -> bool:
+    rows, cols = len(grid), len(grid[0])
+    from collections import deque
+    q = deque([start])
+    seen = {start}
+    while q:
+        cur = q.popleft()
+        if cur == end:
+            return True
+        for nb in neighbors(cur, rows, cols):
+            if nb in seen:
+                continue
+            r, c = nb
+            if grid[r][c] == "#":
+                continue
+            seen.add(nb)
+            q.append(nb)
+    return False
+
+
+def generate_maze(rows: int, cols: int, density: float) -> Tuple[List[List[str]], Cell, Cell]:
+    """Generate a random maze/grid with obstacles (#). Ensure there's a path from start 'P' to exit 'E'.
+    We'll place start at top-left (0,0) and exit at bottom-right (rows-1, cols-1).
+    """
+    start = (0, 0)
+    exit_cell = (rows - 1, cols - 1)
+
+    attempts = 0
+    max_attempts = 50
+    while True:
+        attempts += 1
+        grid = make_empty_grid(rows, cols)
+        
+        total = rows * cols
+        num_obs = int(total * density)
+        
+        placed = 0
+        rng = list((r, c) for r in range(rows) for c in range(cols) if (r, c) not in (start, exit_cell))
+        random.shuffle(rng)
+        for (r, c) in rng[:num_obs]:
+            grid[r][c] = "#"
+        
+        if is_reachable(grid, start, exit_cell):
+            grid[start[0]][start[1]] = "P"
+            grid[exit_cell[0]][exit_cell[1]] = "E"
+            return grid, start, exit_cell
+        if attempts >= max_attempts:
+            # reduce density and try again
+            density *= 0.9
+            attempts = 0
+
+
+def render_grid(grid: List[List[str]], player_pos: Cell, steps: int):
+    rows, cols = len(grid), len(grid[0])
+    
+    display = make_empty_grid(rows, cols)
+    for r in range(rows):
+        for c in range(cols):
+            display[r][c] = grid[r][c]
+    pr, pc = player_pos
+    display[pr][pc] = "@"
+
+    if HAS_RICH:
+        table = Table.grid(padding=(0, 0))
+        
+        for r in range(rows):
+            row_text = ""
+            for c in range(cols):
+                ch = display[r][c]
+                if ch == "#":
+                    row_text += "[bold red]█[/]"
+                elif ch == "@":
+                    row_text += "[bold green]@[/]"
+                elif ch == "P":
+                    row_text += "[green]P[/]"
+                elif ch == "E":
+                    row_text += "[yellow]E[/]"
+                else:
+                    row_text += "·"
+            table.add_row(row_text)
+        console.clear()
+        panel = Panel(table, title=f"Steps: {steps}", subtitle="Use W A S D to move (or commands)")
+        console.print(panel)
+    else:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(f"Steps: {steps}")
+        for r in range(rows):
+            line = ""
+            for c in range(cols):
+                ch = display[r][c]
+                if ch == "#":
+                    line += "#"
+                elif ch == "@":
+                    line += "@"
+                elif ch == "P":
+                    line += "P"
+                elif ch == "E":
+                    line += "E"
+                else:
+                    line += "."
+            print(line)
+
+
+def play_game(rows: int = DEFAULT_ROWS, cols: int = DEFAULT_COLS, density: float = OBSTACLE_DENSITY):
+    # Title
+    if HAS_PYFIGLET:
+        banner = pyfiglet.figlet_format("Maze Quest")
+        cprint(banner, color="cyan")
+    else:
+        rprint("=== Maze Quest ===")
+
+    
+    if HAS_TQDM:
+        for _ in tqdm(range(1), desc="Generating maze"):
+            grid, start, exit_cell = generate_maze(rows, cols, density)
+            time.sleep(0.2)
+    else:
+        grid, start, exit_cell = generate_maze(rows, cols, density)
+
+    player = start
+    steps = 0
+    path = [player]
+
+
+    cprint("Use W (up), S (down), A (left), D (right). Type 'map' to reprint, 'hint' for BFS hint, 'quit' to give up.", "yellow")
+
+    while True:
+        render_grid(grid, player, steps)
+        if player == exit_cell:
+            cprint("Você encontrou a saída! 🎉", "green")
+            break
+    
+        if INQUIRER == "PyInquirer":
+            questions = [
+                {
+                    'type': 'input',
+                    'name': 'move',
+                    'message': 'Next move (W/A/S/D or command): '
+                }
+            ]
+            ans = _prompt(questions)
+            cmd = ans.get('move', '') if ans else ''
+        elif INQUIRER:
+            try:
+                q = [INQUIRER.Text('move', message='Next move (W/A/S/D or command)')]
+                ans = INQUIRER.prompt(q)
+                cmd = ans.get('move', '') if ans else ''
+            except Exception:
+                cmd = input('Next move (W/A/S/D or command): ')
+        else:
+            cmd = input('Next move (W/A/S/D or command): ')
+
+        cmd = cmd.strip().lower()
+        if not cmd:
+            continue
+        if cmd in ("quit", "q", "exit"):
+            cprint("Você desistiu. Jogo encerrado.", "red")
+            break
+        if cmd == "map":
+            continue
+        if cmd == "hint":
+            
+            from collections import deque
+            rows_, cols_ = len(grid), len(grid[0])
+            q = deque([(player, 0)])
+            seen = {player}
+            parent = {player: None}
+            found = False
+            while q:
+                cur, d = q.popleft()
+                if cur == exit_cell:
+                    found = True
+                    break
+                for nb in neighbors(cur, rows_, cols_):
+                    if nb in seen:
+                        continue
+                    r, c = nb
+                    if grid[r][c] == "#":
+                        continue
+                    seen.add(nb)
+                    parent[nb] = cur
+                    q.append((nb, d + 1))
+            if found:
+                
+                cur = exit_cell
+                steps_to = 0
+                while parent[cur] is not None:
+                    steps_to += 1
+                    cur = parent[cur]
+                cprint(f"Hint: cerca de {steps_to} passos até a saída.", "cyan")
+            else:
+                cprint("Sem caminho conhecido.", "red")
+            input('Pressione Enter para continuar...')
+            continue
+
+        
+        move_map = {
+            'w': (-1, 0), 'up': (-1, 0),
+            's': (1, 0), 'down': (1, 0),
+            'a': (0, -1), 'left': (0, -1),
+            'd': (0, 1), 'right': (0, 1),
+        }
+        if cmd not in move_map:
+            cprint("Comando inválido.", "red")
+            continue
+        dr, dc = move_map[cmd]
+        nr, nc = player[0] + dr, player[1] + dc
+        if not (0 <= nr < len(grid) and 0 <= nc < len(grid[0])):
+            cprint("Bateu na parede do labirinto.", "yellow")
+            continue
+        if grid[nr][nc] == "#":
+            cprint("Há um obstáculo aí!", "red")
+            continue
+        
+        player = (nr, nc)
+        steps += 1
+        path.append(player)
+
+    
+    rec = {
+        "timestamp": int(time.time()),
+        "rows": rows,
+        "cols": cols,
+        "steps": steps,
+        "won": player == exit_cell,
+        "path": path,
+    }
+    save_history(rec)
+    if player == exit_cell:
+        cprint(f"Você venceu em {steps} passos. Histórico salvo.", "green")
+    else:
+        cprint("Jogo salvo no histórico.", "yellow")
+
+
+def show_history_table():
+    data = load_history()
+    if not data:
+        cprint("Nenhum histórico encontrado.", "yellow")
+        return
+    if HAS_RICH:
+        t = Table(title="Histórico de Jogos")
+        t.add_column("#", justify="right")
+        t.add_column("Data (unix)")
+        t.add_column("Tamanho")
+        t.add_column("Passos")
+        t.add_column("Resultado")
+        for i, rec in enumerate(data, 1):
+            t.add_row(str(i), str(rec.get('timestamp')), f"{rec.get('rows')}x{rec.get('cols')}", str(rec.get('steps')), "Venceu" if rec.get('won') else "Desistiu")
+        console.print(t)
+    else:
+        for i, rec in enumerate(data, 1):
+            print(f"{i}. {rec.get('timestamp')} - {rec.get('rows')}x{rec.get('cols')} - {rec.get('steps')} passos - {'Venceu' if rec.get('won') else 'Desistiu'}")
+
+
+def main_menu():
+    while True:
+        if HAS_PYFIGLET:
+            print(pyfiglet.figlet_format("Maze Quest", font="slant"))
+        else:
+            rprint("=== Maze Quest ===")
+
+        choices = ["Iniciar Jogo", "Ver Histórico", "Sair"]
+        if INQUIRER == "PyInquirer":
+            questions = [
+                {
+                    'type': 'list',
+                    'name': 'menu',
+                    'message': 'Escolha uma opção',
+                    'choices': choices
+                }
+            ]
+            ans = _prompt(questions)
+            choice = ans.get('menu') if ans else None
+        elif INQUIRER:
+            try:
+                q = [INQUIRER.List('menu', message='Escolha uma opção', choices=choices)]
+                ans = INQUIRER.prompt(q)
+                choice = ans.get('menu') if ans else None
+            except Exception:
+                
+                print('1) Iniciar Jogo\n2) Ver Histórico\n3) Sair')
+                sel = input('Escolha [1-3]: ')
+                choice = choices[int(sel) - 1] if sel.isdigit() and 1 <= int(sel) <= 3 else None
+        else:
+            print('1) Iniciar Jogo\n2) Ver Histórico\n3) Sair')
+            sel = input('Escolha [1-3]: ')
+            choice = choices[int(sel) - 1] if sel.isdigit() and 1 <= int(sel) <= 3 else None
+
+        if choice == "Iniciar Jogo":
+            
+            try:
+                r = int(input(f"Linhas (padrão {DEFAULT_ROWS}): ") or DEFAULT_ROWS)
+                c = int(input(f"Colunas (padrão {DEFAULT_COLS}): ") or DEFAULT_COLS)
+            except Exception:
+                r, c = DEFAULT_ROWS, DEFAULT_COLS
+            play_game(r, c, OBSTACLE_DENSITY)
+            input('Pressione Enter para voltar ao menu...')
+        elif choice == "Ver Histórico":
+            show_history_table()
+            input('Pressione Enter para continuar...')
+        elif choice == "Sair":
+            cprint("Tchau!", "cyan")
+            break
+        else:
+            cprint("Escolha inválida.", "red")
+
+
+if __name__ == '__main__':
+
+    missing = []
+    if not USE_COLORAMA and not colored:
+        missing.append('colorama or termcolor')
+    if not HAS_PYFIGLET:
+        missing.append('pyfiglet')
+    if not HAS_RICH:
+        missing.append('rich')
+    if INQUIRER is None:
+        missing.append('inquirer or PyInquirer')
+    if not HAS_TQDM:
+        missing.append('tqdm (optional)')
+
+    if missing:
+        cprint("Algumas dependências não foram encontradas: " + ", ".join(missing), "yellow")
+        cprint("Recomendo rodar: pip install colorama pyfiglet rich inquirer tqdm", "cyan")
+
+    main_menu()
